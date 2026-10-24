@@ -62,7 +62,7 @@ for(let row=0;row<8;row++){
             piece.classList.add("piece");
             if(pieceName.startsWith("black")){
                 piece.classList.add("black-piece");
-            } 
+            }
             else{
                 piece.classList.add("white-piece");
             }
@@ -76,6 +76,13 @@ for(let row=0;row<8;row++){
 let selectedPiece = null;
 let currentTurn = "white";
 const statusText = document.querySelector(".status-text");
+let lastMove = null;
+const castlingRights = {
+    whiteKingSide: true,
+    whiteQueenSide: true,
+    blackKingSide: true,
+    blackQueenSide: true
+};
 
 board.addEventListener("click", (event) => {
     const square = event.target.closest(".square");
@@ -107,22 +114,93 @@ board.addEventListener("click", (event) => {
     if (!pieceName.startsWith(currentTurn) || !isLegalMove(fromPosition, square.id)) {
         return;
     }
-    // Capture an opponent's piece, if present
-    if(piece) {
-        piece.remove();
+
+    let promotedPiece = null;
+    const destinationRank = square.id[1];
+    if (pieceName.endsWith("-pawn") && (destinationRank === "1" || destinationRank === "8")) {
+        const choice = window.prompt("Promote pawn to queen, rook, bishop, or knight:", "queen");
+        if (choice === null) {
+            return;
+        }
+        const selectedPromotion = choice.trim().toLowerCase();
+        if (!["queen", "rook", "bishop", "knight"].includes(selectedPromotion)) {
+            statusText.textContent = "Choose queen, rook, bishop, or knight to promote.";
+            return;
+        }
+        promotedPiece = `${currentTurn}-${selectedPromotion}`;
     }
-    // Move the selected piece
+
+    const toPosition = square.id;
+    const isCastling = pieceName.endsWith("-king") &&
+        Math.abs(fromPosition.charCodeAt(0) - toPosition.charCodeAt(0)) === 2;
+    const isEnPassant = pieceName.endsWith("-pawn") &&
+        fromPosition[0] !== toPosition[0] &&
+        !gameState[toPosition];
+    const capturedPosition = isEnPassant
+        ? `${toPosition[0]}${fromPosition[1]}`
+        : toPosition;
+    const capturedPiece = gameState[capturedPosition];
+
+    updateCastlingRights(fromPosition, pieceName, capturedPosition, capturedPiece);
     delete gameState[fromPosition];
-    gameState[square.id] = pieceName;
+    if (capturedPiece) {
+        delete gameState[capturedPosition];
+        document.getElementById(capturedPosition).querySelector(".piece")?.remove();
+    }
+
+    if (isCastling) {
+        const rank = fromPosition[1];
+        const kingSide = toPosition[0] > fromPosition[0];
+        const rookFrom = `${kingSide ? "h" : "a"}${rank}`;
+        const rookTo = `${kingSide ? "f" : "d"}${rank}`;
+        const rook = document.getElementById(rookFrom).querySelector(".piece");
+        gameState[rookTo] = gameState[rookFrom];
+        delete gameState[rookFrom];
+        document.getElementById(rookTo).appendChild(rook);
+    }
+
+    gameState[toPosition] = promotedPiece || pieceName;
     square.appendChild(selectedPiece);
+    if (promotedPiece) {
+        selectedPiece.textContent = pieceSymbols[promotedPiece];
+    }
     selectedPiece.classList.remove("selected");
     selectedPiece = null;
+    lastMove = { from: fromPosition, to: toPosition, piece: pieceName };
     currentTurn = currentTurn === "white" ? "black" : "white";
     statusText.textContent = `${currentTurn === "white" ? "White" : "Black"} to move`;
 });
 
-// Movement rules for individual pieces. Check/checkmate and special moves
-// (castling, en passant, and promotion) are not handled yet.
+function updateCastlingRights(from, piece, capturedPosition, capturedPiece) {
+    if (piece === "white-king") {
+        castlingRights.whiteKingSide = false;
+        castlingRights.whiteQueenSide = false;
+    } else if (piece === "black-king") {
+        castlingRights.blackKingSide = false;
+        castlingRights.blackQueenSide = false;
+    } else if (piece === "white-rook" && from === "h1") {
+        castlingRights.whiteKingSide = false;
+    } else if (piece === "white-rook" && from === "a1") {
+        castlingRights.whiteQueenSide = false;
+    } else if (piece === "black-rook" && from === "h8") {
+        castlingRights.blackKingSide = false;
+    } else if (piece === "black-rook" && from === "a8") {
+        castlingRights.blackQueenSide = false;
+    }
+
+    if (capturedPiece === "white-rook" && capturedPosition === "h1") {
+        castlingRights.whiteKingSide = false;
+    } else if (capturedPiece === "white-rook" && capturedPosition === "a1") {
+        castlingRights.whiteQueenSide = false;
+    } else if (capturedPiece === "black-rook" && capturedPosition === "h8") {
+        castlingRights.blackKingSide = false;
+    } else if (capturedPiece === "black-rook" && capturedPosition === "a8") {
+        castlingRights.blackQueenSide = false;
+    }
+}
+
+// Movement rules for individual pieces and special moves. Check/checkmate
+// handling is separate from move validation.
 function getPosition(position) {
     if (typeof position !== "string" || !/^[a-h][1-8]$/.test(position)) {
         return null;
@@ -211,6 +289,73 @@ function isLegalKingMove(from, to) {
     );
 }
 
+function isSquareAttacked(position, byColor) {
+    const target = getPosition(position);
+    if (!target) {
+        return false;
+    }
+
+    return Object.entries(gameState).some(([from, piece]) => {
+        if (!piece.startsWith(byColor)) {
+            return false;
+        }
+
+        const start = getPosition(from);
+        const fileDistance = Math.abs(start.file - target.file);
+        const rankDistance = Math.abs(start.rank - target.rank);
+        const pieceType = piece.split("-")[1];
+
+        switch (pieceType) {
+            case "pawn": {
+                const direction = byColor === "white" ? 1 : -1;
+                return fileDistance === 1 && target.rank - start.rank === direction;
+            }
+            case "knight":
+                return (fileDistance === 2 && rankDistance === 1) ||
+                    (fileDistance === 1 && rankDistance === 2);
+            case "king":
+                return fileDistance <= 1 && rankDistance <= 1;
+            case "rook":
+                return (start.file === target.file || start.rank === target.rank) &&
+                    isPathClear(from, position);
+            case "bishop":
+                return fileDistance === rankDistance && fileDistance > 0 &&
+                    isPathClear(from, position);
+            case "queen":
+                return (
+                    start.file === target.file ||
+                    start.rank === target.rank ||
+                    (fileDistance === rankDistance && fileDistance > 0)
+                ) && isPathClear(from, position);
+            default:
+                return false;
+        }
+    });
+}
+
+function isLegalCastle(from, to) {
+    const king = gameState[from];
+    const color = king?.split("-")[0];
+    const rank = color === "white" ? "1" : "8";
+    const opponent = color === "white" ? "black" : "white";
+    const kingSide = to[0] === "g";
+    const rookFrom = `${kingSide ? "h" : "a"}${rank}`;
+    const rightsKey = `${color}${kingSide ? "KingSide" : "QueenSide"}`;
+    const path = kingSide
+        ? [`f${rank}`, `g${rank}`]
+        : [`d${rank}`, `c${rank}`, `b${rank}`];
+    const kingPath = kingSide ? [`f${rank}`, `g${rank}`] : [`d${rank}`, `c${rank}`];
+
+    return king === `${color}-king` &&
+        from === `e${rank}` &&
+        to === `${kingSide ? "g" : "c"}${rank}` &&
+        castlingRights[rightsKey] &&
+        gameState[rookFrom] === `${color}-rook` &&
+        path.every((position) => !gameState[position]) &&
+        !isSquareAttacked(from, opponent) &&
+        kingPath.every((position) => !isSquareAttacked(position, opponent));
+}
+
 function isLegalPawnMove(from, to) {
     const start = getPosition(from);
     const end = getPosition(to);
@@ -235,10 +380,32 @@ function isLegalPawnMove(from, to) {
             isPathClear(from, to);
     }
 
-    return fileDistance === 1 &&
-        rankDistance === direction &&
-        Boolean(targetPiece) &&
-        !targetPiece.startsWith(color);
+    if (fileDistance !== 1 || rankDistance !== direction) {
+        return false;
+    }
+
+    if (targetPiece) {
+        return !targetPiece.startsWith(color);
+    }
+
+    const capturedPosition = `${to[0]}${from[1]}`;
+    if (
+        lastMove?.piece !== `${color === "white" ? "black" : "white"}-pawn` ||
+        lastMove.to !== capturedPosition ||
+        Math.abs(Number(lastMove.to[1]) - Number(lastMove.from[1])) !== 2 ||
+        gameState[capturedPosition] !== lastMove.piece
+    ) {
+        return false;
+    }
+
+    delete gameState[from];
+    delete gameState[capturedPosition];
+    gameState[to] = pawn;
+    const exposesKing = isKingInCheck(color);
+    delete gameState[to];
+    gameState[from] = pawn;
+    gameState[capturedPosition] = lastMove.piece;
+    return !exposesKing;
 }
 
 function isLegalMove(from, to) {
@@ -264,10 +431,105 @@ function isLegalMove(from, to) {
         case "knight":
             return isLegalKnightMove(from, to);
         case "king":
-            return isLegalKingMove(from, to);
+            return isLegalKingMove(from, to) ||
+                (Math.abs(start.file - end.file) === 2 && isLegalCastle(from, to));
         case "pawn":
             return isLegalPawnMove(from, to);
         default:
             return false;
     }
+}
+
+function isKingInCheck(color) {
+    const kingPosition = Object.keys(gameState).find(
+        (position) => gameState[position] === `${color}-king`
+    );
+
+    if (!kingPosition) {
+        return false;
+    }
+
+    const opponentColor = color === "white" ? "black" : "white";
+    return Object.keys(gameState).some((position) => {
+        const piece = gameState[position];
+        return piece.startsWith(opponentColor) && isLegalMove(position, kingPosition);
+    });
+}
+
+function isCheckmate(color) {
+    if (!isKingInCheck(color)) {
+        return false;
+    }
+
+    const kingPosition = Object.keys(gameState).find(
+        (position) => gameState[position] === `${color}-king`
+    );
+
+    if (!kingPosition) {
+        return false;
+    }
+
+    const kingMoves = [
+        { file: 0, rank: 1 },
+        { file: 1, rank: 1 },
+        { file: 1, rank: 0 },
+        { file: 1, rank: -1 },
+        { file: 0, rank: -1 },
+        { file: -1, rank: -1 },
+        { file: -1, rank: 0 },
+        { file: -1, rank: 1 }
+    ];
+
+    for (const move of kingMoves) {
+        const newFile = String.fromCharCode(kingPosition.charCodeAt(0) + move.file);
+        const newRank = Number(kingPosition[1]) + move.rank;
+        const newPosition = `${newFile}${newRank}`;
+        if (newFile >= 'a' && newFile <= 'h' && newRank >= 1 && newRank <= 8) {
+            if (!gameState[newPosition] || !gameState[newPosition].startsWith(color)) {
+                if (!isKingInCheck(color)) {
+                    return false;
+                }
+            }
+        }
+    }
+
+    return true;
+}
+
+function isStalemate(color) {
+    if (isKingInCheck(color)) {
+        return false;
+    }
+
+    const allPositions = Object.keys(gameState);
+    for (const from of allPositions) {
+        if (!gameState[from].startsWith(color)) {
+            continue;
+        }
+        for (let file = 0; file < 8; file++) {
+            for (let rank = 1; rank <= 8; rank++) {
+                const to = `${String.fromCharCode(file + "a".charCodeAt(0))}${rank}`;
+                if (isLegalMove(from, to)) {
+                    const originalPiece = gameState[to];
+                    gameState[to] = gameState[from];
+                    delete gameState[from];
+
+                    const inCheck = isKingInCheck(color);
+
+                    gameState[from] = gameState[to];
+                    if (originalPiece) {
+                        gameState[to] = originalPiece;
+                    } else {
+                        delete gameState[to];
+                    }
+
+                    if (!inCheck) {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+
+    return true;
 }
